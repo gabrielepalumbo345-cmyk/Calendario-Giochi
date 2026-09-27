@@ -1,0 +1,6 @@
+{
+  "name": "CALENDARIO GIOCHI BlackOut404",
+  "description": "Calendario interattivo per la community Discord BlackOut404: proponi orari, scegli i giochi e vota le sessioni con gli altri membri.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
