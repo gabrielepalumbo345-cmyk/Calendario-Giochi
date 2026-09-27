@@ -1,0 +1,83 @@
+{
+  "entities": {
+    "Voter": {
+      "title": "Voter",
+      "description": "Un voto pubblico espresso da un membro della community Discord per una sessione di gioco.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Identificatore univoco del voto.",
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "description": "Nome o tag Discord del votante.",
+          "maxLength": 100
+        },
+        "type": {
+          "type": "string",
+          "description": "Tipo di voto: yes, maybe o interested.",
+          "enum": ["yes", "maybe", "interested"]
+        },
+        "votedAt": {
+          "type": "string",
+          "description": "Timestamp ISO della votazione."
+        }
+      },
+      "required": ["id", "name", "type", "votedAt"]
+    },
+    "GameSession": {
+      "title": "GameSession",
+      "description": "Sessione o proposta di gioco creata da un membro per il calendario.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "ID univoco della partita nel calendario.",
+          "maxLength": 128
+        },
+        "creatorDiscord": {
+          "type": "string",
+          "description": "Nome/tag Discord dell'host o creatore.",
+          "maxLength": 100
+        },
+        "date": {
+          "type": "string",
+          "description": "Data del gioco in formato YYYY-MM-DD.",
+          "maxLength": 10
+        },
+        "time": {
+          "type": "string",
+          "description": "Orario proposto (es. 21:00).",
+          "maxLength": 10
+        },
+        "game": {
+          "type": "string",
+          "description": "Nome del gioco selezionato o cercato.",
+          "maxLength": 150
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Data e ora di creazione in formato ISO."
+        },
+        "voters": {
+          "type": "array",
+          "description": "Elenco pubblico dei voti registrati per questa sessione.",
+          "items": {
+            "$ref": "#/entities/Voter"
+          }
+        }
+      },
+      "required": ["creatorDiscord", "date", "time", "game", "createdAt", "voters"]
+    }
+  },
+  "firestore": {
+    "/sessions/{sessionId}": {
+      "schema": {
+        "$ref": "#/entities/GameSession"
+      },
+      "description": "Collezione pubblica delle sessioni di gioco proposte nel calendario."
+    }
+  }
+}

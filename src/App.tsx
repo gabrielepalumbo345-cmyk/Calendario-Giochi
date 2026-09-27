@@ -10,13 +10,14 @@ import { NewSessionModal } from './components/NewSessionModal';
 import { SessionDetailModal } from './components/SessionDetailModal';
 import { GameSession } from './types';
 import {
-  fetchGameSessions,
+  subscribeToGameSessions,
   createGameSession,
   voteOnSession,
   deleteGameSession,
   getSavedDiscordName,
 } from './utils/api';
-import { CheckCircle2, Gamepad2, Users } from 'lucide-react';
+import { testFirestoreConnection } from './firebase';
+import { CheckCircle2 } from 'lucide-react';
 
 export default function App() {
   const [sessions, setSessions] = useState<GameSession[]>([]);
@@ -42,27 +43,23 @@ export default function App() {
     }, 2500);
   }, []);
 
-  // Initial load
-  const loadSessions = useCallback(async () => {
-    try {
-      const data = await fetchGameSessions();
-      setSessions(data);
-    } catch (err) {
-      console.error('Error fetching sessions:', err);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
+  // Listen in real-time to Firestore sessions
   useEffect(() => {
-    loadSessions();
+    testFirestoreConnection();
 
-    const interval = setInterval(() => {
-      loadSessions();
-    }, 15000);
+    const unsubscribe = subscribeToGameSessions((updatedSessions) => {
+      setSessions(updatedSessions);
+      setIsLoading(false);
 
-    return () => clearInterval(interval);
-  }, [loadSessions]);
+      // Keep detail modal synced if open
+      setSelectedSessionForDetail((curr) => {
+        if (!curr) return null;
+        return updatedSessions.find((s) => s.id === curr.id) || null;
+      });
+    });
+
+    return () => unsubscribe();
+  }, []);
 
   // Handle clicking on a calendar day
   const handleProposeDate = (dateStr: string) => {
@@ -79,7 +76,10 @@ export default function App() {
   }) => {
     try {
       const created = await createGameSession(sessionData);
-      setSessions((prev) => [...prev, created]);
+      setSessions((prev) => {
+        if (prev.some((s) => s.id === created.id)) return prev;
+        return [...prev, created];
+      });
       showToast(`Partita a ${created.game} pubblicata!`);
     } catch (err) {
       console.error('Failed to create session:', err);
@@ -128,11 +128,6 @@ export default function App() {
     return Array.from(set).sort();
   }, [sessions]);
 
-  // Total voters count
-  const totalVotesCount = useMemo(() => {
-    return sessions.reduce((acc, s) => acc + s.voters.length, 0);
-  }, [sessions]);
-
   return (
     <div className="min-h-screen bg-[#0b0e14] text-slate-100 flex flex-col font-sans selection:bg-indigo-600 selection:text-white">
       {/* Toast Notification */}
@@ -159,7 +154,7 @@ export default function App() {
         {isLoading ? (
           <div className="py-20 text-center space-y-3">
             <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto" />
-            <p className="text-xs text-slate-400">Caricamento calendario...</p>
+            <p className="text-xs text-slate-400">Caricamento calendario da Firebase Firestore...</p>
           </div>
         ) : (
           <CalendarGrid

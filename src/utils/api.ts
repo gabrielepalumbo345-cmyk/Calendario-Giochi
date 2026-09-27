@@ -1,7 +1,41 @@
-import { GameSession } from '../types';
+import {
+  collection,
+  doc,
+  getDocs,
+  setDoc,
+  deleteDoc,
+  onSnapshot,
+} from 'firebase/firestore';
+import { db } from '../firebase';
+import { GameSession, Voter } from '../types';
 
+const SESSIONS_COLLECTION = 'sessions';
 const STORAGE_KEY = 'blackout404_game_sessions';
 const DISCORD_USER_KEY = 'blackout404_my_discord_name';
+
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+export interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    operationType,
+    path,
+  };
+  console.error('Firestore Error:', JSON.stringify(errInfo));
+}
 
 export function getSavedDiscordName(): string {
   try {
@@ -19,21 +53,44 @@ export function saveDiscordName(name: string): void {
   }
 }
 
-export async function fetchGameSessions(): Promise<GameSession[]> {
+// Subscribe to real-time updates from Firestore
+export function subscribeToGameSessions(callback: (sessions: GameSession[]) => void): () => void {
   try {
-    const res = await fetch('/api/sessions');
-    if (res.ok) {
-      const data = await res.json();
-      if (data.success && Array.isArray(data.sessions)) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(data.sessions));
-        return data.sessions;
+    const colRef = collection(db, SESSIONS_COLLECTION);
+    const unsubscribe = onSnapshot(
+      colRef,
+      (snapshot) => {
+        const items: GameSession[] = [];
+        snapshot.forEach((d) => {
+          const data = d.data();
+          items.push({
+            id: d.id,
+            creatorDiscord: data.creatorDiscord || '',
+            date: data.date || '',
+            time: data.time || '',
+            game: data.game || '',
+            createdAt: data.createdAt || new Date().toISOString(),
+            voters: Array.isArray(data.voters) ? data.voters : [],
+          });
+        });
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+        callback(items);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, SESSIONS_COLLECTION);
+        // Fallback to local storage if network has issue
+        callback(getCachedSessions());
       }
-    }
-  } catch (err) {
-    console.warn('Backend fetch failed, using local storage cache:', err);
+    );
+    return unsubscribe;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.LIST, SESSIONS_COLLECTION);
+    callback(getCachedSessions());
+    return () => {};
   }
+}
 
-  // Fallback to localStorage
+function getCachedSessions(): GameSession[] {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
@@ -42,47 +99,73 @@ export async function fetchGameSessions(): Promise<GameSession[]> {
   } catch {
     // ignore
   }
-
   return [];
 }
 
-export async function createGameSession(newSession: Omit<GameSession, 'id' | 'createdAt' | 'voters'>): Promise<GameSession> {
+export async function fetchGameSessions(): Promise<GameSession[]> {
   try {
-    const res = await fetch('/api/sessions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newSession),
+    const colRef = collection(db, SESSIONS_COLLECTION);
+    const snapshot = await getDocs(colRef);
+    const items: GameSession[] = [];
+    snapshot.forEach((d) => {
+      const data = d.data();
+      items.push({
+        id: d.id,
+        creatorDiscord: data.creatorDiscord || '',
+        date: data.date || '',
+        time: data.time || '',
+        game: data.game || '',
+        createdAt: data.createdAt || new Date().toISOString(),
+        voters: Array.isArray(data.voters) ? data.voters : [],
+      });
     });
-
-    if (res.ok) {
-      const data = await res.json();
-      if (data.success && data.session) {
-        return data.session;
-      }
-    }
-  } catch (err) {
-    console.warn('Backend create failed, fallback to local storage:', err);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+    return items;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, SESSIONS_COLLECTION);
+    return getCachedSessions();
   }
+}
 
-  // Client-side fallback creation
-  const created: GameSession = {
+export async function createGameSession(
+  newSession: Omit<GameSession, 'id' | 'createdAt' | 'voters'>
+): Promise<GameSession> {
+  const sessionId = 'session-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6);
+  const now = new Date().toISOString();
+
+  const sessionObj: GameSession = {
     ...newSession,
-    id: 'local-' + Date.now(),
-    createdAt: new Date().toISOString(),
+    id: sessionId,
+    createdAt: now,
     voters: [
       {
         id: 'vote-' + Date.now(),
-        name: newSession.creatorDiscord,
+        name: newSession.creatorDiscord.trim(),
         type: 'yes',
-        votedAt: new Date().toISOString(),
+        votedAt: now,
       },
     ],
   };
 
-  const stored = await fetchGameSessions();
-  const updated = [...stored, created];
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-  return created;
+  try {
+    const docRef = doc(db, SESSIONS_COLLECTION, sessionId);
+    await setDoc(docRef, {
+      creatorDiscord: sessionObj.creatorDiscord,
+      date: sessionObj.date,
+      time: sessionObj.time,
+      game: sessionObj.game,
+      createdAt: sessionObj.createdAt,
+      voters: sessionObj.voters,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, `${SESSIONS_COLLECTION}/${sessionId}`);
+  }
+
+  // Update local cache
+  const cached = getCachedSessions();
+  localStorage.setItem(STORAGE_KEY, JSON.stringify([...cached, sessionObj]));
+
+  return sessionObj;
 }
 
 export async function voteOnSession(
@@ -90,67 +173,74 @@ export async function voteOnSession(
   voterName: string,
   voteType: 'yes' | 'maybe' | 'interested'
 ): Promise<GameSession | null> {
-  try {
-    const res = await fetch(`/api/sessions/${sessionId}/vote`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ voterName, voteType }),
-    });
+  const cleanName = voterName.trim();
+  const cached = getCachedSessions();
+  const idx = cached.findIndex((s) => s.id === sessionId);
 
-    if (res.ok) {
-      const data = await res.json();
-      if (data.success && data.session) {
-        return data.session;
+  let updatedSession: GameSession;
+
+  if (idx >= 0) {
+    const session = { ...cached[idx], voters: [...cached[idx].voters] };
+    const existingIdx = session.voters.findIndex(
+      (v) => v.name.toLowerCase() === cleanName.toLowerCase()
+    );
+
+    if (existingIdx >= 0) {
+      if (session.voters[existingIdx].type === voteType) {
+        session.voters.splice(existingIdx, 1);
+      } else {
+        session.voters[existingIdx] = {
+          ...session.voters[existingIdx],
+          type: voteType,
+          votedAt: new Date().toISOString(),
+        };
       }
-    }
-  } catch (err) {
-    console.warn('Backend vote failed, fallback to local storage:', err);
-  }
-
-  // Client-side fallback
-  const sessions = await fetchGameSessions();
-  const idx = sessions.findIndex((s) => s.id === sessionId);
-  if (idx === -1) return null;
-
-  const session = { ...sessions[idx], voters: [...sessions[idx].voters] };
-  const existingVoteIdx = session.voters.findIndex(
-    (v) => v.name.toLowerCase() === voterName.trim().toLowerCase()
-  );
-
-  if (existingVoteIdx >= 0) {
-    if (session.voters[existingVoteIdx].type === voteType) {
-      session.voters.splice(existingVoteIdx, 1);
     } else {
-      session.voters[existingVoteIdx] = {
-        ...session.voters[existingVoteIdx],
+      session.voters.push({
+        id: 'vote-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6),
+        name: cleanName,
         type: voteType,
         votedAt: new Date().toISOString(),
-      };
+      });
     }
+
+    updatedSession = session;
+    cached[idx] = updatedSession;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(cached));
   } else {
-    session.voters.push({
-      id: 'vote-' + Date.now(),
-      name: voterName.trim(),
-      type: voteType,
-      votedAt: new Date().toISOString(),
-    });
+    return null;
   }
 
-  sessions[idx] = session;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
-  return session;
+  try {
+    const docRef = doc(db, SESSIONS_COLLECTION, sessionId);
+    await setDoc(
+      docRef,
+      {
+        creatorDiscord: updatedSession.creatorDiscord,
+        date: updatedSession.date,
+        time: updatedSession.time,
+        game: updatedSession.game,
+        createdAt: updatedSession.createdAt,
+        voters: updatedSession.voters,
+      },
+      { merge: true }
+    );
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `${SESSIONS_COLLECTION}/${sessionId}`);
+  }
+
+  return updatedSession;
 }
 
 export async function deleteGameSession(sessionId: string): Promise<boolean> {
   try {
-    const res = await fetch(`/api/sessions/${sessionId}`, { method: 'DELETE' });
-    if (res.ok) return true;
-  } catch (err) {
-    console.warn('Backend delete failed, fallback to local storage:', err);
+    const docRef = doc(db, SESSIONS_COLLECTION, sessionId);
+    await deleteDoc(docRef);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `${SESSIONS_COLLECTION}/${sessionId}`);
   }
 
-  const sessions = await fetchGameSessions();
-  const filtered = sessions.filter((s) => s.id !== sessionId);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered));
+  const cached = getCachedSessions().filter((s) => s.id !== sessionId);
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(cached));
   return true;
 }

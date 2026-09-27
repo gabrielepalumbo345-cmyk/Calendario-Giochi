@@ -1,0 +1,43 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidGameSession(data) {
+      return data.keys().hasAll(['creatorDiscord', 'date', 'time', 'game', 'createdAt', 'voters'])
+        && data.creatorDiscord is string && data.creatorDiscord.size() > 0 && data.creatorDiscord.size() <= 100
+        && data.date is string && data.date.size() <= 15
+        && data.time is string && data.time.size() <= 15
+        && data.game is string && data.game.size() > 0 && data.game.size() <= 150
+        && data.createdAt is string && data.createdAt.size() <= 50
+        && data.voters is list && data.voters.size() <= 200;
+    }
+
+    // Sessions collection for the gaming calendar (Public gaming community without required email auth)
+    match /sessions/{sessionId} {
+      // Anyone can read sessions and view votes publicly
+      allow read: if true;
+
+      // Creation of a session
+      allow create: if isValidId(sessionId)
+                    && isValidGameSession(request.resource.data);
+
+      // Voting / Updating a session (votes update or editing session)
+      allow update: if isValidId(sessionId)
+                    && isValidGameSession(request.resource.data)
+                    && request.resource.data.createdAt == resource.data.createdAt;
+
+      // Deletion of a session
+      allow delete: if isValidId(sessionId);
+    }
+  }
+}
